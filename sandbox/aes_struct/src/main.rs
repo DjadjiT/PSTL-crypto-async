@@ -41,9 +41,13 @@ impl Manager {
 
     fn submit_job(&mut self, job: Job) -> Arc<RwLock<Receipt>> {
 
-        let submitted = Receipt { ciphertext: Vec::new(),
+        let mut submitted = Receipt { ciphertext: Vec::new(),
                                   status: Status::BeingProcessed };
+
+        submitted.ciphertext = vec![0; job.len];
+
         let p = Arc::new(RwLock::new(submitted));
+
         self.receipts.push(p.clone());
         self.min_len = cmp::min(self.min_len, job.len);
         self.jobs.push(job);
@@ -58,7 +62,7 @@ impl Manager {
                              &job.iv,
                              self.min_len);
             }
-            
+
             for i in 0..self.jobs.len() {
                 self.jobs[i].len -= self.min_len;
                 if self.jobs[i].len == 0 {
@@ -66,8 +70,30 @@ impl Manager {
                 }
             }
 
+            for i in 0..self.jobs.len() {
+                if self.jobs[i].len == 0 {
+                    Arc::clone(&self.receipts[i]).write().unwrap().status = Status::Completed;
+                }
+            }
+
             // BUG: if *all* the jobs are done, we must reset min_len
-            
+
+            let mut counter : u8 = 0;
+
+            for i in 0..self.jobs.len(){
+                if self.jobs[i].len == 0 {
+                    counter = counter + 1;
+                }
+            }
+
+            if counter == 8 {
+                self.min_len = usize::max_value();
+            }
+            println!("min_len : {:?}", self.min_len);
+
+            for i in 0..self.jobs.len(){
+                println!("{:?}", self.receipts[i].read().unwrap().ciphertext);
+            }
         }
 
         return p;
@@ -84,8 +110,57 @@ fn fake_encrypt(input: &[u8], mut output: &mut [u8], key: &[u8], nonce: &[u8], l
 }
 
 fn main() {
-    let _manager = Manager::new();
-    
+    let mut _manager = Manager::new();
+    let mut input: Vec<u8> = [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1].to_vec();
+    let iv : [u8;16] = [0;16];
+    let in_len : usize = input.len();
+    let keys : Vec<u8> = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16].to_vec();
+
+    let job = Job {
+        plaintext : input.clone(),
+        iv : iv,
+        keys : keys,
+        len : in_len
+    };
+    let mut job2 = job.clone();
+    input.pop();
+    input.push(2);input.push(2);input.push(2);
+    job2.plaintext = input.clone();
+    job2.len = input.len();
+    let mut job3 = job.clone();
+    input.pop();
+    input.push(3);
+    job3.plaintext = input.clone();
+    let mut job4 = job.clone();
+    input.pop();
+    input.push(4);
+    job4.plaintext = input.clone();
+    let mut job5 = job.clone();
+    input.pop();
+    input.push(5);
+    job5.plaintext = input.clone();
+    let mut job6 = job.clone();
+    input.pop();
+    input.push(6);
+    job6.plaintext = input.clone();
+    let mut job7 = job.clone();
+    input.pop();
+    input.push(7);
+    job7.plaintext = input.clone();
+    let mut job8 = job.clone();
+    input.pop();
+    input.push(8);
+    job8.plaintext = input.clone();
+
+    _manager.submit_job(job);
+    _manager.submit_job(job2);
+    _manager.submit_job(job3);
+    _manager.submit_job(job4);
+    _manager.submit_job(job5);
+    _manager.submit_job(job6);
+    _manager.submit_job(job7);
+    _manager.submit_job(job8);
+
 /*
     let mut args = build_Args();
     let mut manager = build_Manager(args);
