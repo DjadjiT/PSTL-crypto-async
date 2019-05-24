@@ -1,17 +1,22 @@
 extern crate crypto;
+extern crate rand;
 
+use std::iter::repeat;
+use rand::{OsRng, Rng};
+use std::sync::Mutex;
 use std::error::Error;
 use std::fmt;
 use std::cmp;
 use std::sync::{Arc, RwLock};
 //use crypto::aes::{self, KeySize};
 
+#[derive(PartialEq, Debug)]
 enum Status {
     BeingProcessed,
     Completed
 }
 
-#[derive(Clone)]
+
 struct Job{
     plaintext: Vec<u8>,
     iv: [u8;16],
@@ -53,9 +58,9 @@ impl Manager {
         self.jobs.push(job);
 
         if self.jobs.len() == 8 {
-
             // Batch encryption (faked)
             for (i, job) in self.jobs.iter().enumerate() { // XXX: get rid of clone() here
+
                 fake_encrypt(&job.plaintext,
                              &mut Arc::clone(&self.receipts[i]).write().unwrap().ciphertext,
                              &job.keys,
@@ -70,168 +75,128 @@ impl Manager {
                 }
             }
 
-            for i in 0..self.jobs.len() {
-                if self.jobs[i].len == 0 {
-                    Arc::clone(&self.receipts[i]).write().unwrap().status = Status::Completed;
-                }
-            }
+            //Remove finished job
+            self.jobs.retain(|x| x.len != 0);
+            //Remove finished receipt
+            self.receipts.retain(|x| x.read().unwrap().status == Status::BeingProcessed);
 
-            // BUG: if *all* the jobs are done, we must reset min_len
+            self.min_len = self.min_len();
 
-            let mut counter : u8 = 0;
+        }
 
-            for i in 0..self.jobs.len(){
-                if self.jobs[i].len == 0 {
-                    counter = counter + 1;
-                }
-            }
-
-            if counter == 8 {
-                self.min_len = usize::max_value();
-            }
-            println!("min_len : {:?}", self.min_len);
-
-            for i in 0..self.jobs.len(){
-                println!("{:?}", self.receipts[i].read().unwrap().ciphertext);
-            }
+        if self.jobs.len() == 0 {
+            self.min_len = usize::max_value();
         }
 
         return p;
 
     }
 
+    fn max_len(&self) -> usize{
+        let mut max : usize = 0;
+        for job in &self.jobs{
+            if job.len > max {
+                max = job.len;
+            }
+        }
+        max
+    }
+
+    fn min_len(&self) -> usize{
+        let mut min : usize = usize::max_value();
+        for job in &self.jobs{
+            if job.len < min {
+                min = job.len;
+            }
+        }
+        min
+    }
+
+    fn flush_job(&mut self) {
+        let max : usize = self.max_len();
+
+        for job in &mut self.jobs {
+            job.plaintext.resize(max, 0 as u8);
+            job.keys.resize(max, 0 as u8);
+        }
+
+        for rec in &self.receipts {
+            Arc::clone(&rec).write().unwrap().ciphertext.resize(max,0);
+        }
+
+        for (i, job) in self.jobs.iter().enumerate() {
+            fake_encrypt(&job.plaintext,
+                         &mut Arc::clone(&self.receipts[i]).write().unwrap().ciphertext,
+                         &job.keys,
+                         &job.iv,
+                         max);
+        Arc::clone(&self.receipts[i]).write().unwrap().ciphertext.resize(job.len,0);
+        Arc::clone(&self.receipts[i]).write().unwrap().status = Status::Completed;
+        }
+
+        self.jobs = Vec::new();
+        self.receipts = Vec::new();
+        self.min_len = usize::max_value();
+    }
 
 }
 
-fn fake_encrypt(input: &[u8], mut output: &mut [u8], key: &[u8], nonce: &[u8], len: usize) {
+fn fake_encrypt(input: &[u8], output: &mut [u8], key: &[u8], nonce: &[u8], len: usize) {
+
     for i in 0..len {
       output[i] = input[i] ^ key[i];
     }
 }
 
+fn poll(receipt : Arc<RwLock<Receipt>>) -> Vec<u8>{
+    let rec = Arc::clone(&receipt);
+    let mut lock : bool = false;
+
+    while lock != true {
+        let r = rec.read().unwrap();
+        if r.status == Status::Completed {
+            lock = !lock;
+        }
+        else  {
+            drop(r);
+        }
+    }
+    let reception = rec.read().unwrap();
+    return reception.ciphertext.to_vec()
+}
+
 fn main() {
     let mut _manager = Manager::new();
-    let mut input: Vec<u8> = [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1].to_vec();
-    let iv : [u8;16] = [0;16];
-    let in_len : usize = input.len();
-    let keys : Vec<u8> = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16].to_vec();
 
-    let job = Job {
-        plaintext : input.clone(),
-        iv : iv,
-        keys : keys,
-        len : in_len
-    };
-    let mut job2 = job.clone();
-    input.pop();
-    input.push(2);input.push(2);input.push(2);
-    job2.plaintext = input.clone();
-    job2.len = input.len();
-    let mut job3 = job.clone();
-    input.pop();
-    input.push(3);
-    job3.plaintext = input.clone();
-    let mut job4 = job.clone();
-    input.pop();
-    input.push(4);
-    job4.plaintext = input.clone();
-    let mut job5 = job.clone();
-    input.pop();
-    input.push(5);
-    job5.plaintext = input.clone();
-    let mut job6 = job.clone();
-    input.pop();
-    input.push(6);
-    job6.plaintext = input.clone();
-    let mut job7 = job.clone();
-    input.pop();
-    input.push(7);
-    job7.plaintext = input.clone();
-    let mut job8 = job.clone();
-    input.pop();
-    input.push(8);
-    job8.plaintext = input.clone();
+    let mut random = OsRng::new().expect("Failed to get OS random generator");
+    let mut rng = rand::thread_rng();
+    let mut rec_vec : Vec<Arc<RwLock<Receipt>>> = Vec::new();
 
-    _manager.submit_job(job);
-    _manager.submit_job(job2);
-    _manager.submit_job(job3);
-    _manager.submit_job(job4);
-    _manager.submit_job(job5);
-    _manager.submit_job(job6);
-    _manager.submit_job(job7);
-    _manager.submit_job(job8);
+    for i in 0..50 {
+        if (i % 10) == 0 {
+            _manager.flush_job();
+        }
+        let mut len : usize = rng.gen_range(0, 100) as usize;
+        let mut input: Vec<u8> = repeat(0u8).take(len).collect();
+        random.fill_bytes(&mut input[..]);
+        let iv : [u8;16] = [0;16];
+        let mut key: Vec<u8> = repeat(0u8).take(len).collect();
+        random.fill_bytes(&mut key[..]);
 
-/*
-    let mut args = build_Args();
-    let mut manager = build_Manager(args);
 
-    let mut input: Vec<char> = Vec::new();
-        input.push('a');input.push('a');input.push('a');input.push('a');input.push('a');
-        input.push('a');input.push('a');input.push('a');input.push('a');input.push('a');
-        input.push('a');input.push('a');input.push('a');input.push('a');
-
-        let mut output: Vec<char> = input.clone();
-        let mut keys: Vec<char> = input.clone();
-        keys.push('a');keys.push('a');
-        let len: u32 = input.len() as u32;
-
-        let mut job: Aes_job = Aes_job {
-            plaintext: input.clone(),
-            ciphertext: output,
-            iv: [0;16],
-            len: len,
-            keys: keys.clone(),
-            status: Status::Idle
+        let job = Job{
+            plaintext : input,
+            iv : iv,
+            keys : key,
+            len : len
         };
+        rec_vec.push(_manager.submit_job(job));
+    }
+    _manager.flush_job();
 
-        let mut job2 = job.clone();
-        keys.pop();
-        keys.push('b');
-        job2.keys =  keys.clone();
-        let mut job3 = job.clone();
-        keys.pop();
-        keys.push('c');
-        job3.keys =  keys.clone();
-        let mut job4 = job.clone();
-        keys.pop();
-        keys.push('d');
-        job4.keys =  keys.clone();
-        let mut job5 = job.clone();
-        keys.pop();
-        keys.push('e');
-        job5.keys =  keys.clone();
-        let mut job6 = job.clone();
-        keys.pop();
-        keys.push('f');
-        job6.keys =  keys.clone();
-        let mut job7 = job.clone();
-        keys.pop();
-        keys.push('g');
-        job7.keys =  keys.clone();
-        let mut job8 = job.clone();
-        keys.pop();
-        keys.push('h');
-        input.push('b');
-        job8.plaintext = input.clone();
-        job8.ciphertext = input.clone();
-        job8.keys =  keys.clone();
+    for rec in &rec_vec {
+        assert_eq!(rec.read().unwrap().status, Status::Completed);
+    }
+    assert_eq!(rec_vec.len(), 50);
 
-        manager.submit_job(job);
-        manager.submit_job(job2);
-        manager.submit_job(job3);
-        manager.submit_job(job4);
-        manager.submit_job(job5);
-        manager.submit_job(job6);
-        manager.submit_job(job7);
-        manager.submit_job(job8);
-
-        /*println!("job1: {:?}", job.ciphertext);
-        println!("job2: {:?}", job2.ciphertext);
-        println!("job3: {:?}", job3.ciphertext);
-        println!("job4: {:?}", job4.ciphertext);
-        println!("job5: {:?}", job5.ciphertext);
-        println!("job6: {:?}", job6.ciphertext);
-        println!("job7: {:?}", job7.ciphertext);
-        println!("job8: {:?}", job8.ciphertext);*/
-*/
 }
